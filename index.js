@@ -1,32 +1,24 @@
 // gemini-proxy-backend/index.js
 
-// Load environment variables from .env file
-require('dotenv').config();
-
 // Import necessary packages
 const express = require('express');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { format } = require('date-fns'); // Need date-fns for formatting dates
+const { format } = require('date-fns');
 
 // Initialize Express application
 const app = express();
 
 // --- Configuration for Cloud Functions ---
-// Cloud Functions uses a specific port provided by the environment
-const PORT = process.env.PORT || 8080; // Default to 8080 for local testing if PORT not set by Cloud Functions
+const PORT = process.env.PORT || 8080;
 
 // --- Middleware ---
-// Enable CORS for specified origins
-// IMPORTANT: Your Netlify domain and local dev port 5175 have been added here.
 app.use(cors({
     origin: [
-        'http://localhost:5175', // Your React app's local dev URL
-        'https://aquamarine-fox-f08f2d.netlify.app' // Your deployed frontend domain
-        // Add other frontend domains if needed (e.g., test environments)
+        'http://localhost:5175',
+        'https://aquamarine-fox-f08f2d.netlify.app'
     ]
 }));
-// Parse JSON request bodies
 app.use(express.json());
 
 // --- Gemini API Key (Securely loaded from environment variables) ---
@@ -38,10 +30,38 @@ if (!GEMINI_API_KEY) {
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
-// --- API Endpoint for Gemini Insights ---
-// This is the endpoint your React frontend will call
+const calculateBirdieRate = (rounds) => {
+    let totalHolesPlayed = 0;
+    let totalBirdies = 0;
+
+    rounds.forEach(round => {
+        if (round.courseDetails && round.courseDetails.holes && round.scores) {
+            const parMap = round.courseDetails.holes.reduce((acc, hole) => {
+                acc[hole.number] = parseInt(hole.par, 10);
+                return acc;
+            }, {});
+
+            for (const holeNumber in round.scores) {
+                const playerScore = round.scores[holeNumber];
+                const parScore = parMap[holeNumber];
+
+                if (parScore !== undefined && playerScore < parScore) {
+                    totalBirdies++;
+                }
+                totalHolesPlayed++;
+            }
+        }
+    });
+
+    if (totalHolesPlayed === 0) {
+        return "Insufficient data to calculate birdie rate. Par data for all holes is required.";
+    }
+
+    const birdieRate = (totalBirdies / totalHolesPlayed) * 100;
+    return `Based on your scores, your birdie rate is ${birdieRate.toFixed(2)}%.`;
+};
+
 app.post('/api/gemini-insight', async (req, res) => {
-    // Now expecting 'scores' array within each round object as well
     const { prompt, rounds } = req.body;
 
     if (!prompt || !Array.isArray(rounds)) {
@@ -54,58 +74,69 @@ app.post('/api/gemini-insight', async (req, res) => {
             model: "gemini-1.5-flash",
             generationConfig: {
                 temperature: 0.1,
-                maxOutputTokens: 250, // Increased slightly to allow for more detailed hole-by-hole analysis
+                maxOutputTokens: 250,
             },
             systemInstruction: "You are a concise disc golf score analyst. Provide direct, brief answers to questions about scores and hole-by-hole performance. Avoid unnecessary conversational filler, intros, or lengthy explanations unless explicitly asked for. When listing, use bullet points or a clear, simple format. Prioritize factual data from the provided scores.",
         });
 
-        // Reconstruct the prompt text from your frontend logic, adapted for backend
-        let promptText = "Analyze the following disc golf scores and provide insights based on overall and hole-by-hole performance. ";
         const lowerCasePrompt = prompt.toLowerCase();
+        let finalResponse;
 
-        if (lowerCasePrompt.includes("best round")) {
-            promptText += "Identify the single best round by total score (lowest number). Tell me ONLY its Course Name, Layout Name, Date (formatted as MMMM d, yyyy), Total Score, and all individual Hole Scores. Do not add any other text, prefaces, or conversational filler. E.g., 'Course: Maple Hill, Layout: Red, Date: January 1, 2023, Score: 55 (Holes: 3, 4, 3, 5...)'. ";
-        } else if (lowerCasePrompt.includes("worst round")) {
-            promptText += "Identify the single worst round by total score (highest number). Tell me ONLY its Course Name, Layout Name, Date (formatted as MMMM d, yyyy), Total Score, and all individual Hole Scores. Do not add any other text, prefaces, or conversational filler. E.g., 'Course: Oakwood, Layout: Blue, Date: February 15, 2023, Score: 72 (Holes: 4, 5, 4, 6...)'. ";
-        } else if (lowerCasePrompt.includes("average score")) {
-            promptText += "Calculate the average total score across all rounds. Provide ONLY the number. E.g., '62'. ";
-        } else if (lowerCasePrompt.includes("most common course")) {
-            promptText += "Identify the most frequently played course. Provide ONLY the course name. E.g., 'Pleasant Valley'. ";
-        } else if (lowerCasePrompt.includes("hole scores") || lowerCasePrompt.includes("hole by hole")) {
-            promptText += "List the individual hole scores for each round. For each round, include Course Name, Layout Name, Date, and then a list of all Hole Scores. ";
+        if (lowerCasePrompt.includes("birdie rate")) {
+            finalResponse = calculateBirdieRate(rounds);
         }
-        else if (lowerCasePrompt.includes("summarize") || lowerCasePrompt.includes("summary")) {
-            promptText += "Provide a brief, 2-3 sentence summary of the overall trends or highlights in these scores, mentioning consistent good/bad holes if relevant. ";
-        } else {
-            promptText += "Answer the user's question directly and concisely. Ensure the response is no more than 3 sentences and can include hole-by-hole observations. "; // Default concise instruction
+        else {
+            let promptText = "Analyze the following disc golf scores and provide insights based on overall and hole-by-hole performance. ";
+
+            if (lowerCasePrompt.includes("best round")) {
+                promptText += "Identify the single best round by total score (lowest number). Tell me ONLY its Course Name, Layout Name, Date (formatted as MMMM d, yyyy), Total Score, and all individual Hole Scores. Do not add any other text, prefaces, or conversational filler. E.g., 'Course: Maple Hill, Layout: Red, Date: January 1, 2023, Score: 55 (Holes: 3, 4, 3, 5...)'. ";
+            } else if (lowerCasePrompt.includes("worst round")) {
+                promptText += "Identify the single worst round by total score (highest number). Tell me ONLY its Course Name, Layout Name, Date (formatted as MMMM d, yyyy), Total Score, and all individual Hole Scores. Do not add any other text, prefaces, or conversational filler. E.g., 'Course: Oakwood, Layout: Blue, Date: February 15, 2023, Score: 72 (Holes: 4, 5, 4, 6...)'. ";
+            } else if (lowerCasePrompt.includes("average score")) {
+                promptText += "Calculate the average total score across all rounds. Provide ONLY the number. E.g., '62'. ";
+            } else if (lowerCasePrompt.includes("most common course")) {
+                promptText += "Identify the most frequently played course. Provide ONLY the course name. E.g., 'Pleasant Valley'. ";
+            } else if (lowerCasePrompt.includes("hole scores") || lowerCasePrompt.includes("hole by hole")) {
+                promptText += "List the individual hole scores for each round. For each round, include Course Name, Layout Name, Date, and then a list of all Hole Scores. ";
+            } else if (lowerCasePrompt.includes("summarize") || lowerCasePrompt.includes("summary")) {
+                promptText += "Provide a brief, 2-3 sentence summary of the overall trends or highlights in these scores, mentioning consistent good/bad holes if relevant. ";
+            } else {
+                promptText += "Answer the user's question directly and concisely. Ensure the response is no more than 3 sentences and can include hole-by-hole observations. "; // Default concise instruction
+            }
+
+            if (rounds.length === 0) {
+                promptText += "No scores available to analyze.";
+            } else {
+                promptText += "Here are the scores:\n";
+                const sortedRounds = [...rounds].sort((a, b) => {
+                    const scoreA = a.totalScore || Infinity;
+                    const scoreB = b.totalScore || Infinity;
+                    return scoreA - scoreB;
+                });
+
+                sortedRounds.forEach((round, index) => {
+                    let roundDate = null;
+                    if (round.date && typeof round.date === 'object' && round.date.seconds) {
+                        roundDate = new Date(round.date.seconds * 1000 + round.date.nanoseconds / 1000000);
+                    }
+                    const formattedDate = roundDate ? format(roundDate, 'MMMM d, yyyy') : 'N/A Date';
+
+                    // --- CORRECTED LOGIC: Include hole pars in the prompt text ---
+                    const holeDetailsWithScores = round.courseDetails?.holes ? round.courseDetails.holes.map(hole => {
+                        const score = round.scores?.[hole.number] || 'N/A';
+                        return `Hole ${hole.number}: Par ${hole.par}, Score ${score}`;
+                    }).join(', ') : 'Hole details not available';
+                    // --- END CORRECTED LOGIC ---
+
+                    promptText += `Round ${index + 1}: Course: ${round.courseName || 'N/A'}, Layout: ${round.layoutName || 'N/A'}, Date: ${formattedDate}, Total Score: ${round.totalScore || 'N/A'}, Score to Par: ${round.scoreToPar || 0}. Details: ${holeDetailsWithScores}\n`;
+                });
+                promptText += `\nUser's specific question: "${prompt}".`;
+            }
+            const result = await model.generateContent(promptText);
+            finalResponse = result.response.text();
         }
 
-        if (rounds.length === 0) {
-            promptText += "No scores available to analyze.";
-        } else {
-            promptText += "Here are the scores:\n";
-            const sortedRounds = [...rounds].sort((a, b) => {
-                const scoreA = a.totalScore || Infinity;
-                const scoreB = b.totalScore || Infinity;
-                return scoreA - scoreB;
-            });
-
-            sortedRounds.forEach((round, index) => {
-                let roundDate = null;
-                if (round.date && typeof round.date === 'object' && round.date.seconds) {
-                    roundDate = new Date(round.date.seconds * 1000 + round.date.nanoseconds / 1000000);
-                }
-                const formattedDate = roundDate ? format(roundDate, 'MMMM d, yyyy') : 'N/A Date';
-                const holeScores = round.scores && Array.isArray(round.scores) ? ` (Holes: ${round.scores.join(', ')})` : '';
-
-                promptText += `Round ${index + 1}: Course: ${round.courseName || 'N/A'}, Layout: ${round.layoutName || 'N/A'}, Date: ${formattedDate}, Total Score: ${round.totalScore || 'N/A'}, Score to Par: ${round.scoreToPar || 0}${holeScores}\n`;
-            });
-            promptText += `\nUser's specific question: "${prompt}".`;
-        }
-
-        const result = await model.generateContent(promptText);
-        const text = result.response.text();
-        res.json({ response: text });
+        res.json({ response: finalResponse });
 
     } catch (error) {
         console.error('Gemini API request failed:', error);
@@ -113,6 +144,7 @@ app.post('/api/gemini-insight', async (req, res) => {
     }
 });
 
+// This block is only for local development
 if (process.env.NODE_ENV !== 'production') {
     app.listen(PORT, () => {
         console.log(`Backend server listening at http://localhost:${PORT}`);
@@ -120,4 +152,5 @@ if (process.env.NODE_ENV !== 'production') {
     });
 }
 
+// This exports your Express app for Google Cloud Functions
 exports.app = app;
